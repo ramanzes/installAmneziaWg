@@ -110,8 +110,10 @@ apt-get install -y -qq \
     curl \
     wget \
     unzip \
-    linux-headers-$(uname -r) \
+    libelf-dev \
+    linux-headers-amd64 \
     dkms \
+    make \
     pkg-config \
     iptables \
     iptables-persistent \
