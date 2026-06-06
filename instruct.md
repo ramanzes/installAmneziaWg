@@ -715,3 +715,170 @@ wdtt-server поддерживает управление доступом че�
 | Белые списки, есть Termux | AWG + vk-turn-proxy | AmneziaVPN + Termux |
 | Белые списки, хочу проще | **WDTT** | **WDTT** |
 
+
+---
+
+## Часть 8 — Установка wdtt-server на чистый VPS (Ubuntu/Debian) через Deploy tab
+
+Это **самый простой способ** для обычных пользователей — приложение само разворачивает сервер по SSH.
+
+### Поддерживаемые ОС
+
+- Ubuntu 20.04, 22.04, 24.04
+- Debian 11, 12
+- CentOS/RHEL/AlmaLinux/Rocky
+- Fedora
+- Arch/Manjaro
+
+> Alpine Linux — только ручной метод (см. Часть 1)
+
+### Требования к VPS
+
+- Чистый VPS с публичным IPv4
+- Root-доступ по SSH (порт 22 по умолчанию)
+- Открытые порты: **56000/UDP** (DTLS) и **56001/UDP** (WireGuard)
+- RAM: от 512 МБ, диск: от 5 ГБ
+
+### Шаг 1 — Установить WDTT на телефон
+
+**Через Obtainium (GitHub Store):**
+1. Установить F-Droid: https://f-droid.org/
+2. В F-Droid найти и установить **Obtainium**
+3. В Obtainium: нажать **+** → вставить URL:
+   ```
+   https://github.com/amurcanov/proxy-turn-vk-android
+   ```
+4. Выбрать APK под архитектуру телефона:
+   - Современные Android-телефоны → **WDTT-arm64-v8a.apk**
+   - Старые/бюджетные → WDTT-armeabi-v7a.apk
+
+### Шаг 2 — Открыть вкладку Deploy
+
+В приложении WDTT открыть вкладку **Деплой (Deploy)**.
+
+### Шаг 3 — Ввести данные сервера
+
+| Поле | Что вводить |
+|---|---|
+| IP / домен | IP-адрес вашего VPS |
+| SSH логин | root (или другой с sudo) |
+| SSH пароль | пароль от сервера |
+| SSH порт | 22 (обычно) |
+
+### Шаг 4 — Установить мастер-пароль
+
+В разделе **Секреты** / **Пароль**:
+- Придумать или сгенерировать мастер-пароль (от 8 символов)
+- Запомнить — он понадобится при каждом подключении
+
+### Шаг 5 — Запустить установку
+
+Нажать **Установить**. Приложение автоматически:
+1. Подключится к серверу по SSH
+2. Загрузит бинарник `wdtt-server`
+3. Настроит NAT и firewall (iptables)
+4. Создаст и запустит systemd-сервис `wdtt.service`
+5. Покажет прогресс и результат
+
+Установка занимает **1–3 минуты**.
+
+### Шаг 6 — Проверить установку
+
+На сервере:
+```bash
+systemctl status wdtt
+# Должно быть: active (running)
+
+journalctl -u wdtt -n 10
+# Должно быть: [SERVER] Готов
+```
+
+### Шаг 7 — Подключиться
+
+Перейти на вкладку **Туннель** и подключиться (см. Часть 3).
+
+---
+
+## Часть 9 — Установка wdtt-server на Alpine Linux (ручной метод)
+
+Используется когда VPS работает на Alpine — Deploy tab не поддерживает Alpine.
+
+### Почему ручной метод?
+
+- Alpine использует **OpenRC** (не systemd) — Deploy tab не умеет
+- Бинарник встроен в APK — нужно извлечь вручную
+- Всё остальное аналогично Ubuntu-варианту
+
+### Полные шаги
+
+```bash
+# 1. Скачать APK и извлечь бинарник
+curl -LA 'Mozilla/5.0' -o /tmp/wdtt.apk \
+  'https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.2/WDTT-x86_64.apk'
+mkdir -p /tmp/wdtt_apk && cd /tmp/wdtt_apk
+unzip -q /tmp/wdtt.apk
+cp /tmp/wdtt_apk/assets/server /usr/local/bin/wdtt-server
+chmod +x /usr/local/bin/wdtt-server
+
+# 2. Создать директорию конфига и сгенерировать пароль
+mkdir -p /etc/wdtt
+PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+echo $PASS > /etc/wdtt/master.key && echo "Пароль: $PASS"
+
+# 3. Настроить NAT
+iptables -I FORWARD -i wdtt0 -j ACCEPT
+iptables -I FORWARD -o wdtt0 -j ACCEPT
+iptables -t nat -A POSTROUTING -s 10.66.66.0/24 -o eth0 -j MASQUERADE
+
+# 4. Создать OpenRC сервис
+PASS=$(cat /etc/wdtt/master.key)
+cat > /etc/init.d/wdtt-server << INIT
+#!/sbin/openrc-run
+name="wdtt-server"
+description="WDTT VPN Server"
+command="/usr/local/bin/wdtt-server"
+command_args="-listen 0.0.0.0:56000 -wg-port 56001 -config-dir /etc/wdtt -password $PASS -dns 1.1.1.1,8.8.8.8"
+command_background=true
+pidfile="/run/wdtt-server.pid"
+output_log="/var/log/wdtt-server.log"
+error_log="/var/log/wdtt-server.log"
+depend() { need net; }
+start_pre() {
+    ip link show wdtt0 >/dev/null 2>&1 && ip link del wdtt0 2>/dev/null || true
+}
+INIT
+chmod +x /etc/init.d/wdtt-server
+
+# 5. Запустить и добавить в автозапуск
+rc-update add wdtt-server default
+rc-service wdtt-server start
+
+# 6. Проверить
+sleep 2 && tail -5 /var/log/wdtt-server.log
+# Должно быть: [SERVER] Готов
+```
+
+### Обновление до новой версии (Alpine)
+
+```bash
+# Скачать новый APK, извлечь бинарник
+curl -LA 'Mozilla/5.0' -o /tmp/wdtt_new.apk \
+  'https://github.com/amurcanov/proxy-turn-vk-android/releases/latest/download/WDTT-x86_64.apk'
+mkdir -p /tmp/wdtt_new && cd /tmp/wdtt_new
+unzip -q /tmp/wdtt_new.apk
+
+rc-service wdtt-server stop
+cp /tmp/wdtt_new/assets/server /usr/local/bin/wdtt-server
+chmod +x /usr/local/bin/wdtt-server
+rc-service wdtt-server start
+```
+
+### Где хранится конфигурация
+
+| Файл | Содержимое |
+|---|---|
+| `/etc/wdtt/master.key` | Мастер-пароль |
+| `/etc/wdtt/wg-keys.dat` | WireGuard ключи сервера |
+| `/etc/wdtt/passwords.json` | База пользовательских паролей |
+| `/var/log/wdtt-server.log` | Лог сервера |
+| `/etc/init.d/wdtt-server` | OpenRC сервис |
