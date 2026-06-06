@@ -400,3 +400,318 @@ ssh -p ВАШ_SSH_ПОРТ root@ВАШ_IP_СЕРВЕРА "awg-client show ИМЯ
 scp -P ВАШ_SSH_ПОРТ root@ВАШ_IP_СЕРВЕРА:/etc/amnezia/awg/clients/ИМЯ/ИМЯ.conf ~/direct.conf
 ```
 
+
+---
+
+# WDTT VPN — Полная инструкция
+
+## Что такое WDTT
+
+**WDTT** (WireGuard DTLS TURN Tunnel) — Android-приложение для обхода белых списков.
+Трафик идёт через TURN-серверы ВКонтакте, которые всегда в белом списке ТСПУ.
+
+**Отличие от vk-turn-proxy + Termux:**
+- Не нужен Termux в фоне
+- Автоматическая капча (3 уровня fallback)
+- До 4 VK хешей одновременно → больше скорость
+- Встроенный VPN-интерфейс, всё в одном приложении
+
+**Схема:**
+```
+Android WDTT → VK TURN серверы (белый список) → wdtt-server на VPS → интернет
+```
+
+---
+
+## Часть 1 — Установка сервера (Alpine Linux)
+
+### Состояние на этом сервере
+
+- **IP:** ВАШ_IP_СЕРВЕРА
+- **DTLS порт:** 56000/UDP (wdtt-server)
+- **WG порт:** 56001/UDP (внутренний WireGuard wdtt-server)
+- **VK-turn-proxy:** 56100/UDP (старый метод через Termux)
+- **AWG:** 36058/UDP (AmneziaWG, прямые подключения)
+- **Мастер-пароль:** ВАШ_МАСТЕР_ПАРОЛЬ
+- **Конфиг:** /etc/wdtt/
+- **Лог:** /var/log/wdtt-server.log
+- **Подсеть клиентов:** 10.66.66.0/24
+
+### Управление сервисом
+
+```bash
+rc-service wdtt-server status     # статус
+rc-service wdtt-server restart    # перезапуск
+rc-service wdtt-server stop       # остановить
+tail -f /var/log/wdtt-server.log  # живые логи
+```
+
+### Как был установлен (для новых серверов)
+
+wdtt-server извлечён из APK приложения (бинарник встроен внутрь):
+
+```bash
+# 1. Скачать APK
+curl -LA 'Mozilla/5.0' -o /tmp/wdtt.apk \
+  'https://github.com/amurcanov/proxy-turn-vk-android/releases/download/v1.2.2/WDTT-x86_64.apk'
+
+# 2. Распаковать APK (это ZIP-архив)
+mkdir -p /tmp/wdtt_apk && cd /tmp/wdtt_apk
+unzip -q /tmp/wdtt.apk
+
+# 3. Установить бинарник
+cp /tmp/wdtt_apk/assets/server /usr/local/bin/wdtt-server
+chmod +x /usr/local/bin/wdtt-server
+
+# 4. Создать директорию конфига
+mkdir -p /etc/wdtt
+
+# 5. Настроить iptables (NAT для подсети wdtt)
+iptables -I FORWARD -i wdtt0 -j ACCEPT
+iptables -I FORWARD -o wdtt0 -j ACCEPT
+iptables -t nat -A POSTROUTING -s 10.66.66.0/24 -o eth0 -j MASQUERADE
+
+# 6. Создать OpenRC сервис
+cat > /etc/init.d/wdtt-server << 'INIT'
+#!/sbin/openrc-run
+name="wdtt-server"
+description="WDTT VPN Server"
+command="/usr/local/bin/wdtt-server"
+command_args="-listen 0.0.0.0:56000 -wg-port 56001 -config-dir /etc/wdtt -password ВАШ_ПАРОЛЬ -dns 1.1.1.1,8.8.8.8"
+command_background=true
+pidfile="/run/wdtt-server.pid"
+output_log="/var/log/wdtt-server.log"
+error_log="/var/log/wdtt-server.log"
+depend() {
+    need net
+}
+start_pre() {
+    ip link show wdtt0 >/dev/null 2>&1 && ip link del wdtt0 2>/dev/null || true
+}
+INIT
+
+chmod +x /etc/init.d/wdtt-server
+rc-update add wdtt-server default
+rc-service wdtt-server start
+```
+
+**Флаги wdtt-server:**
+```
+-listen       адрес DTLS (default 0.0.0.0:56000)
+-wg-port      порт внутреннего WireGuard (default 56001)
+-config-dir   директория конфига (default /etc/wdtt)
+-password     мастер-пароль владельца
+-dns          DNS-серверы (default 1.1.1.1,8.8.8.8)
+-bot-token    Telegram Bot Token (опционально)
+-admin        Telegram Admin ID (опционально)
+```
+
+### Проверка что сервер работает
+
+```bash
+tail -5 /var/log/wdtt-server.log
+# Должно быть: [SERVER] Готов
+# И каждые 10 сек: [СТАТ] Активных: X | ...
+
+ss -ulnp | grep -E '56000|56001'
+# Должны быть открыты оба порта
+```
+
+---
+
+## Часть 2 — Установка клиента на Android
+
+### Шаг 1 — Установить F-Droid
+Скачать с официального сайта: https://f-droid.org/
+
+### Шаг 2 — Установить GitHub Store в F-Droid
+1. Открыть F-Droid
+2. Настройки → Репозитории → добавить репозиторий:
+   `https://raw.githubusercontent.com/ImranR98/Obtainium/refs/heads/main/output/app_unverified.json`
+   **или** найти в поиске F-Droid: **Obtainium** (это и есть GitHub Store)
+
+### Шаг 3 — Найти WDTT в Obtainium
+1. Открыть Obtainium
+2. Нажать **+** → добавить приложение
+3. Вставить URL: `https://github.com/amurcanov/proxy-turn-vk-android`
+4. Установить → выбрать APK под свою архитектуру:
+   - Большинство современных телефонов: **WDTT-arm64-v8a.apk**
+   - Старые/бюджетные: WDTT-armeabi-v7a.apk
+   - Эмуляторы/x86: WDTT-x86_64.apk
+
+---
+
+## Часть 3 — Подключение через WDTT
+
+### Получить VK хеш
+
+1. Открыть ВКонтакте (приложение или браузер)
+2. Перейти в **Звонки** → нажать **Создать звонок** (групповой)
+3. Скопировать ссылку приглашения:
+   `https://vk.com/call/join/AbCdEfGhIjK`
+4. Хеш — это всё что после `/join/`: **AbCdEfGhIjK**
+
+**Важно:** хеш действует пока звонок активен. При завершении звонка — создать новый.
+При выходе нажимать **"Просто завершить"**, не **"Завершить для всех"**.
+
+### Вкладка "Туннель" — подключение
+
+| Поле | Значение |
+|---|---|
+| Сервер | ВАШ_IP_СЕРВЕРА |
+| VK хеш | вставить хеш из ссылки |
+| Пароль | ВАШ_МАСТЕР_ПАРОЛЬ |
+| Потоки | 3–4 |
+
+Нажать **Подключить** → выдать разрешение VPN.
+
+### Автокапча
+
+Если при подключении появляется запрос капчи:
+- Приложение автоматически пытается решить 3 раза
+- Если не вышло — откроется WebView для ручного решения
+- Решить капчу в браузере внутри приложения → подключение продолжится
+
+### Исключения приложений (Split Tunneling)
+
+Вкладка **Исключения** в WDTT:
+- **Чёрный список:** выбранные приложения идут мимо VPN
+- **Белый список:** только выбранные приложения через VPN
+
+---
+
+## Часть 4 — Диагностика
+
+### Логи на сервере в реальном времени
+```bash
+tail -f /var/log/wdtt-server.log
+```
+
+**Успешное подключение выглядит так:**
+```
+[AUTH] Клиент аутентифицирован
+[WG] Новый пир: 10.66.66.X
+[СТАТ] Активных: 1 | ...
+```
+
+### Частые проблемы
+
+| Проблема | Причина | Решение |
+|---|---|---|
+| Кнопка сразу становится "Подключить" | VK хеш истёк или невалиден | Создать новый звонок VK |
+| Кнопка сразу становится "Подключить" | Неверный пароль | Проверить пароль: ВАШ_МАСТЕР_ПАРОЛЬ |
+| Капча не решается автоматически | VK усложнил капчу | Решить вручную в WebView |
+| Подключился, но сайты не открываются | DNS не работает | Проверить -dns флаг в сервисе |
+| Сервер не отвечает | wdtt-server упал | rc-service wdtt-server restart |
+
+### Что означает "Кнопка становится Подключить"
+
+Соединение не дошло до сервера — проверить:
+1. VK хеш свежий? (создать новый звонок)
+2. Звонок ещё активен? (не завершён)
+3. Сервер работает? (`tail -5 /var/log/wdtt-server.log`)
+4. Порт 56000 доступен? (`ss -ulnp | grep 56000`)
+
+---
+
+## Часть 5 — Сравнение методов обхода белых списков
+
+| Метод | Приложение | Сложность | Скорость |
+|---|---|---|---|
+| AWG прямой | AmneziaVPN | Простой | Максимальная |
+| AWG + vk-turn-proxy | AmneziaVPN + Termux | Средний | ~15 Мбит/с |
+| **WDTT** | **WDTT** | **Простой** | **~20+ Мбит/с** |
+
+**Когда что использовать:**
+- Нет блокировок → **AWG прямой** (порт 36058)
+- Белые списки, есть Termux → **AWG + vk-turn-proxy** (порт 56100)
+- Белые списки, хочу проще → **WDTT** (порт 56000)
+
+
+---
+
+## Часть 6 — Мастер-пароль и управление доступом
+
+### Текущий мастер-пароль
+
+```
+ВАШ_МАСТЕР_ПАРОЛЬ
+```
+
+Хранится на сервере: `/etc/wdtt/master.key`
+
+```bash
+cat /etc/wdtt/master.key   # посмотреть текущий пароль
+```
+
+### Где используется
+
+Мастер-пароль вводится в поле **Пароль** в приложении WDTT (вкладка Туннель).
+Это пароль владельца — он всегда работает.
+
+### Как сменить пароль
+
+```bash
+# 1. Сгенерировать новый пароль
+NEW_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+echo $NEW_PASS
+
+# 2. Сохранить в файл
+echo $NEW_PASS > /etc/wdtt/master.key
+
+# 3. Обновить в init-скрипте
+sed -i s/-password [^ ]*/-password $NEW_PASS/ /etc/init.d/wdtt-server
+
+# 4. Перезапустить сервис
+rc-service wdtt-server restart
+```
+
+После смены — обновить пароль у всех кто им пользуется.
+
+### Дополнительные пароли для пользователей (Telegram бот)
+
+wdtt-server поддерживает управление доступом через Telegram бот:
+- До 10 пользовательских паролей (16 символов)
+- Можно установить срок действия
+- Привязка к устройству
+
+Чтобы подключить Telegram бота — добавить флаги в init-скрипт:
+```bash
+-bot-token ВАШ_TELEGRAM_BOT_TOKEN -admin ВАШ_TELEGRAM_ID
+```
+
+Команды бота: `/list`, `/add`, `/remove`, `/settings`
+
+---
+
+## Часть 7 — WDTT и AmneziaWG: независимые системы
+
+**Важно:** WDTT и AmneziaWG — полностью раздельные VPN.
+Никаких общих конфигов, никаких конфликтов.
+
+| | WDTT | AmneziaWG |
+|---|---|---|
+| Интерфейс | wdtt0 | wg0 |
+| Подсеть | 10.66.66.0/24 | 10.8.1.0/24 |
+| Порт | 56000/UDP | 36058/UDP |
+| Приложение | WDTT | AmneziaVPN |
+| Конфиги | не нужны | /etc/amnezia/awg/clients/ |
+
+### Для подключения через WDTT
+
+**Не нужно** создавать никакие конфиги AWG. Просто:
+1. Открыть приложение **WDTT**
+2. Вкладка **Туннель**
+3. Ввести: сервер + VK хеш + пароль
+4. Нажать **Подключить**
+
+Старые конфиги AmneziaVPN остаются для прямого AWG подключения — они работают независимо.
+
+### Какой метод когда использовать
+
+| Ситуация | Метод | Приложение |
+|---|---|---|
+| Нет блокировок | AWG прямой | AmneziaVPN |
+| Белые списки, есть Termux | AWG + vk-turn-proxy | AmneziaVPN + Termux |
+| Белые списки, хочу проще | **WDTT** | **WDTT** |
+
