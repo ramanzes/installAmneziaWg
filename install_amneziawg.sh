@@ -7,7 +7,7 @@ exec > >(tee -a "$LOG_FILE")
 exec 2>&1
 
 printf "========================================\n"
-printf "=== AmneziaWG Auto Installer v1.4 for Alpine ===\n"
+printf "=== AmneziaWG Auto Installer v2.0 for Alpine ===\n"
 printf "========================================\n\n"
 
 # Проверка прав root
@@ -334,7 +334,7 @@ echo "$SERVER_IP" > /etc/amnezia/awg/server_ip.txt
 printf "Конфигурация создана\n"
 
 # 9. НАСТРОЙКА СЕРВИСА И FIREWALL
-printf "\n[9/9] Настройка сервиса и firewall...\n"
+printf "\n[9/11] Настройка сервиса и firewall...\n"
 
 cat > /etc/init.d/amnezia-awg << 'SERVICEEOF'
 #!/sbin/openrc-run
@@ -394,26 +394,54 @@ if command -v iptables-save >/dev/null 2>&1; then
     rc-update add iptables default
 fi
 
+# 10. УСТАНОВКА AWG-CLIENT
+printf "\n[10/11] Установка awg-client (с поддержкой VK TURN)...\n"
+INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$INSTALL_DIR/awg-client.sh" ]; then
+    sh "$INSTALL_DIR/initawg_client.sh"
+    printf "awg-client установлен\n"
+else
+    printf "Предупреждение: awg-client.sh не найден\n"
+    printf "Установите вручную: ./initawg_client.sh\n"
+fi
+
+# 11. УСТАНОВКА VK-TURN-PROXY
+printf "\n[11/11] Установка vk-turn-proxy (обход белых списков)...\n"
+VK_BIN="/usr/local/bin/vk-turn-server"
+VK_URL="https://github.com/cacggghp/vk-turn-proxy/releases/latest/download/server-linux-amd64"
+if wget --timeout=30 -q "$VK_URL" -O "$VK_BIN" 2>/dev/null || \
+   curl -sL --max-time 30 "$VK_URL" -o "$VK_BIN" 2>/dev/null; then
+    chmod +x "$VK_BIN"
+    printf '#!/sbin/openrc-run\nname="vk-turn-proxy"\ndescription="VK TURN Proxy for AmneziaWG"\ncommand="/usr/local/bin/vk-turn-server"\ncommand_args="-listen 0.0.0.0:56000 -connect 127.0.0.1:36058"\ncommand_background=true\npidfile="/run/vk-turn-proxy.pid"\noutput_log="/var/log/vk-turn-proxy.log"\nerror_log="/var/log/vk-turn-proxy.log"\ndepend() {\n    need net\n    after amnezia-awg\n}\n' > /etc/init.d/vk-turn-proxy
+    chmod +x /etc/init.d/vk-turn-proxy
+    rc-update add vk-turn-proxy default 2>/dev/null || true
+    rc-service vk-turn-proxy start && \
+        printf "vk-turn-proxy запущен на порту 56000\n" || \
+        printf "Запустите вручную: rc-service vk-turn-proxy start\n"
+else
+    printf "Не удалось скачать vk-turn-server\n"
+    printf "Установите вручную: curl -L -o %s %s\n" "$VK_BIN" "$VK_URL"
+fi
+
 printf "\n========================================\n"
 printf "Установка завершена!\n"
 printf "========================================\n"
 printf "Сервер IP: %s\n" "$SERVER_IP"
-printf "Порт: 36058/UDP\n"
-printf "Публичный ключ: %s\n" "$SERVER_PUBLIC_KEY"
-printf "Интерфейс: %s\n" "$MAIN_INTERFACE"
-printf "Ядро: %s\n" "$KERNEL_VERSION"
-printf "\n⚠️  ВАЖНО: Если модуль не загрузился, перезагрузите систему:\n"
-printf "  reboot\n"
-printf "\nУправление сервисом:\n"
-printf "  rc-service amnezia-awg {start|stop|restart|reload|status}\n"
+printf "AWG порт:  36058/UDP\n"
+printf "VK TURN:   56000/UDP\n"
+printf "AWG pubkey: %s\n" "$SERVER_PUBLIC_KEY"
+printf "\nУправление сервисами:\n"
+printf "  rc-service amnezia-awg {start|stop|restart|status}\n"
+printf "  rc-service vk-turn-proxy {start|stop|restart|status}\n"
 printf "\nУправление клиентами:\n"
-printf "  awg-client add <имя>\n"
-printf "  awg-client list\n"
-printf "  awg-client show <имя>\n"
-printf "  awg-client qr <имя>\n"
-printf "\nПроверка статуса:\n"
-printf "  lsmod | grep amneziawg\n"
-printf "  awg show wg0\n"
-printf "  rc-service amnezia-awg status\n"
+printf "  awg-client add <имя>       создать клиента (прямой + VK TURN)\n"
+printf "  awg-client add-vk <имя>    добавить VK TURN конфиг\n"
+printf "  awg-client list            список клиентов\n"
+printf "  awg-client show <имя>      показать оба конфига\n"
+printf "  awg-client qr <имя>        QR прямого конфига\n"
+printf "  awg-client qr-vk <имя>     QR VK TURN конфига\n"
+printf "\nVK TURN клиент (Termux/iSH):\n"
+printf "  ./vk-turn-client -listen 127.0.0.1:9000 -peer %s:56000 -vk-link URL -n 3\n" "$SERVER_IP"
 printf "\nЛоги: %s\n" "$LOG_FILE"
+printf "VK TURN лог: /var/log/vk-turn-proxy.log\n"
 printf "========================================\n"
