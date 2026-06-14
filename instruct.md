@@ -882,3 +882,228 @@ rc-service wdtt-server start
 | `/etc/wdtt/passwords.json` | База пользовательских паролей |
 | `/var/log/wdtt-server.log` | Лог сервера |
 | `/etc/init.d/wdtt-server` | OpenRC сервис |
+
+
+---
+
+# Установка клиента PWDTT v1.2 на десктоп (Linux)
+
+PWDTT — десктопный VPN-клиент, маскирующий трафик под звонки ВКонтакте через TURN/DTLS серверы VK.  
+Репозиторий: https://github.com/luminescq/PWDTT  
+Бинарник: https://github.com/luminescq/PWDTT/releases/download/v1.2/pwdtt-linux-amd64
+
+---
+
+## Вариант A — Debian 12 (Bookworm)
+
+### Шаг 1 — Стандартные зависимости
+
+```bash
+sudo apt install -y wireguard-tools libayatana-appindicator3-1
+```
+
+### Шаг 2 — Скачать и обновить webkit2gtk до версии 2.50.x
+
+На Bookworm по умолчанию стоит более старая версия webkit2gtk-4.0.  
+Обновляем до актуальной (2.50.x), совместимой с бинарником:
+
+```bash
+curl -LO https://github.com/luminescq/PWDTT/releases/download/v1.2/pwdtt-linux-amd64
+
+curl -L -o libjavascriptcoregtk.deb \
+  "http://ftp.debian.org/debian/pool/main/w/webkit2gtk/libjavascriptcoregtk-4.0-18_2.50.6-1~deb12u1_amd64.deb"
+
+curl -L -o libwebkit2gtk.deb \
+  "http://ftp.debian.org/debian/pool/main/w/webkit2gtk/libwebkit2gtk-4.0-37_2.50.6-1~deb12u1_amd64.deb"
+
+curl -L -o libavif15.deb \
+  "http://ftp.debian.org/debian/pool/main/liba/libavif/libavif15_0.11.1-1+deb12u1_amd64.deb"
+
+sudo dpkg --force-depends -i libjavascriptcoregtk.deb libavif15.deb libwebkit2gtk.deb
+sudo ldconfig
+```
+
+> На Bookworm `libicu72`, `libdav1d6`, `librav1e0`, `libsvtav1enc1` уже есть нативно.
+> Симлинки НЕ нужны. Не запускать команды `ln -sf` из инструкции для Trixie.
+
+### Шаг 3 — Проверка зависимостей
+
+```bash
+ldd pwdtt-linux-amd64 | grep "not found"
+# Должен быть пустой вывод
+```
+
+### Шаг 4 — Установка бинарника
+
+```bash
+chmod +x pwdtt-linux-amd64
+sudo cp pwdtt-linux-amd64 /usr/local/bin/pwdtt
+```
+
+### Шаг 5 — Настройка sudo
+
+```bash
+echo 'USERNAME ALL=(ALL) NOPASSWD: /usr/bin/ip, /usr/bin/wg, /usr/bin/wg-quick, /usr/bin/true' | \
+  sudo tee /etc/sudoers.d/pwdtt && sudo chmod 440 /etc/sudoers.d/pwdtt
+```
+
+> `/usr/bin/true` обязателен — PWDTT вызывает `sudo true` как предварительную проверку
+> доступности sudo перед применением WireGuard конфига.
+
+Проверка:
+```bash
+sudo -n /usr/bin/true && echo "OK"
+sudo -n /usr/bin/wg-quick --version
+sudo -n /usr/bin/wg --version
+```
+
+### Шаг 6 — Запуск
+
+```bash
+# GOMAXPROCS=1 обязателен — без него Go падает с "procresize: invalid arg"
+# (cgroup на хосте возвращает 0 доступных CPU)
+GOMAXPROCS=1 pwdtt
+```
+
+Чтобы не писать каждый раз:
+```bash
+echo 'export GOMAXPROCS=1' >> ~/.bashrc
+source ~/.bashrc
+pwdtt
+```
+
+---
+
+## Вариант B — Debian 13 (Trixie)
+
+### Шаг 1 — Стандартные зависимости
+
+```bash
+sudo apt install -y wireguard-tools libayatana-appindicator3-1
+```
+
+### Шаг 2 — WebKit2GTK 4.0 и ICU 72 из Bookworm
+
+Trixie перешёл на webkit2gtk-4.1 и libicu76. Нужно вручную поставить Bookworm-пакеты:
+
+```bash
+curl -LO https://github.com/luminescq/PWDTT/releases/download/v1.2/pwdtt-linux-amd64
+
+curl -L -o libicu72.deb \
+  "http://ftp.debian.org/debian/pool/main/i/icu/libicu72_72.1-3+deb12u1_amd64.deb"
+
+curl -L -o libjavascriptcoregtk.deb \
+  "http://ftp.debian.org/debian/pool/main/w/webkit2gtk/libjavascriptcoregtk-4.0-18_2.50.6-1~deb12u1_amd64.deb"
+
+curl -L -o libwebkit2gtk.deb \
+  "http://ftp.debian.org/debian/pool/main/w/webkit2gtk/libwebkit2gtk-4.0-37_2.50.6-1~deb12u1_amd64.deb"
+
+curl -L -o libavif15.deb \
+  "http://ftp.debian.org/debian/pool/main/liba/libavif/libavif15_0.11.1-1+deb12u1_amd64.deb"
+
+# libicu72 ставится чисто
+sudo dpkg -i libicu72.deb
+
+# Остальные через --force-depends (dpkg жалуется на версии, но .so-файлы найдутся через симлинки)
+sudo dpkg --force-depends -i libjavascriptcoregtk.deb libavif15.deb libwebkit2gtk.deb
+```
+
+### Шаг 3 — Симлинки совместимости
+
+```bash
+# libavif: Trixie имеет libavif16, нужен libavif15
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libavif.so.16 \
+            /usr/lib/x86_64-linux-gnu/libavif.so.15
+
+# dav1d: Trixie имеет .so.7, нужен .so.6
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libdav1d.so.7 \
+            /usr/lib/x86_64-linux-gnu/libdav1d.so.6
+
+# rav1e: Trixie имеет librav1e0.7, нужен librav1e.so.0
+sudo ln -sf /usr/lib/x86_64-linux-gnu/librav1e.so.0.7 \
+            /usr/lib/x86_64-linux-gnu/librav1e.so.0
+
+# SvtAv1Enc: Trixie имеет .so.2, нужен .so.1
+sudo ln -sf /usr/lib/x86_64-linux-gnu/libSvtAv1Enc.so.2 \
+            /usr/lib/x86_64-linux-gnu/libSvtAv1Enc.so.1
+```
+
+### Шаг 4 — Проверка зависимостей
+
+```bash
+ldd pwdtt-linux-amd64 | grep "not found"
+# Должен быть пустой вывод
+```
+
+### Шаг 5 — Установка бинарника
+
+```bash
+chmod +x pwdtt-linux-amd64
+sudo cp pwdtt-linux-amd64 /usr/local/bin/pwdtt
+```
+
+### Шаг 6 — Настройка sudo
+
+```bash
+echo 'USERNAME ALL=(ALL) NOPASSWD: /usr/bin/ip, /usr/bin/wg, /usr/bin/wg-quick, /usr/bin/true' | \
+  sudo tee /etc/sudoers.d/pwdtt && sudo chmod 440 /etc/sudoers.d/pwdtt
+```
+
+> `/usr/bin/true` обязателен — PWDTT вызывает `sudo true` как предварительную проверку
+> доступности sudo перед применением WireGuard конфига.
+
+### Шаг 7 — Запуск
+
+```bash
+# При наличии графического окружения:
+pwdtt
+
+# Без GUI — через виртуальный буфер:
+sudo apt install -y xvfb
+Xvfb :99 -screen 0 1280x800x24 &
+DISPLAY=:99 pwdtt
+```
+
+---
+
+## Отключение IPv6 (получение IPv4 через туннель)
+
+WireGuard маршрутизирует только IPv4 трафик. IPv6 идёт мимо туннеля напрямую через
+мобильный интерфейс — поэтому `curl ifconfig.co` может возвращать IPv6 адрес провайдера.
+
+### Применить сейчас
+
+```bash
+sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+```
+
+### Сделать постоянным (MX Linux / SysVinit — без systemd)
+
+```bash
+echo "net.ipv6.conf.all.disable_ipv6=1" | sudo tee -a /etc/sysctl.conf
+echo "net.ipv6.conf.default.disable_ipv6=1" | sudo tee -a /etc/sysctl.conf
+```
+
+`net.ipv6.conf.default` применяется ко всем новым интерфейсам при создании,
+включая `wg-turn` который PWDTT создаёт при подключении.
+
+### Проверка
+
+```bash
+curl ifconfig.co
+# Должен вернуть IPv4
+```
+
+---
+
+## Известные проблемы PWDTT
+
+| Симптом | Причина | Решение |
+|---|---|---|
+| `procresize: invalid arg` | cgroup возвращает 0 CPU (Bookworm хост или Trixie VM) | `GOMAXPROCS=1 pwdtt` |
+| `libavif.so.15: cannot open shared object file` | Сломанный симлинк (применили Trixie-инструкцию на Bookworm) | `sudo rm /usr/lib/x86_64-linux-gnu/libavif.so.15 && sudo ldconfig` |
+| `sudo требует пароль` в GUI | Не включён `/usr/bin/true` в sudoers | Добавить `true` в правило sudoers |
+| `Join link is not valid` (error 9008) | VK join link просрочен или недействителен | Создать новую ссылку в VK, вставить хеш в настройки |
+| Капча не проходит ни авто ни вручную | IP rate limit от VK после многих неудачных попыток | Остановить pwdtt, подождать 20–30 мин, повторить |
+| `curl ifconfig.co` возвращает IPv6 | WireGuard туннелирует только IPv4, IPv6 идёт мимо | Отключить IPv6 через sysctl (раздел выше) |
